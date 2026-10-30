@@ -1,7 +1,7 @@
 "use client";
 // filepath: c:\Users\casan\fta-meal-log\app\page.tsx
 import { useEffect, useState } from "react";
-import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
+import type { FormEvent } from "react";
 
 type Meal = {
   id: string;
@@ -9,6 +9,36 @@ type Meal = {
   time: string;
   date: string;
 };
+
+type ApiMeal = {
+  id: string;
+  name: string;
+  meal_date: string;
+  meal_time: string;
+};
+
+const PASSCODE_STORAGE_KEY = "fta-app-passcode";
+
+function getErrorMessage(body: unknown, fallback: string) {
+  if (
+    typeof body === "object" &&
+    body !== null &&
+    "error" in body &&
+    typeof body.error === "string"
+  ) {
+    return body.error;
+  }
+  return fallback;
+}
+
+function toMeal(meal: ApiMeal): Meal {
+  return {
+    id: meal.id,
+    name: meal.name,
+    date: meal.meal_date,
+    time: meal.meal_time.slice(0, 5),
+  };
+}
 
 function getCurrentTime() {
   return new Intl.DateTimeFormat("en-US", {
@@ -52,6 +82,10 @@ function formatDate(date: string) {
   }).format(dateObject);
 }
 export default function Home() {
+  const [authInitialized, setAuthInitialized] = useState(false);
+  const [passcode, setPasscode] = useState("");
+  const [passcodeInput, setPasscodeInput] = useState("");
+  const [loginError, setLoginError] = useState("");
   const [editingMeal, setEditingMeal] = useState<Meal | null>(null);
   const [meals, setMeals] = useState<Meal[]>([]);
   const [mealsLoaded, setMealsLoaded] = useState(false);
@@ -68,35 +102,43 @@ export default function Home() {
     setSelectedDate(today);
     setWeekStart(getSunday(today));
     setMealTime(getCurrentTime());
+    setPasscode(window.localStorage.getItem(PASSCODE_STORAGE_KEY) ?? "");
+    setAuthInitialized(true);
   }, []);
 
   useEffect(() => {
-    if (!weekStart) return;
+    if (!weekStart || !passcode) return;
 
     let active = true;
     async function loadMeals() {
       setMealsLoaded(false);
       setError("");
       try {
-        const supabase = getSupabaseBrowserClient();
-        const { data, error: loadError } = await supabase
-          .from("meals")
-          .select("id, name, meal_date, meal_time")
-          .gte("meal_date", weekStart)
-          .lte("meal_date", addDays(weekStart, 6))
-          .order("meal_date", { ascending: true })
-          .order("meal_time", { ascending: true });
-
-        if (loadError) throw loadError;
+        const response = await fetch(
+          `/api/meals?week_start=${encodeURIComponent(weekStart)}`,
+          {
+            headers: { "x-app-passcode": passcode },
+            cache: "no-store",
+          },
+        );
+        const body: unknown = await response.json();
+        if (!response.ok) {
+          if (response.status === 401) {
+            window.localStorage.removeItem(PASSCODE_STORAGE_KEY);
+            setPasscode("");
+          }
+          throw new Error(getErrorMessage(body, "Could not load meals."));
+        }
+        if (
+          typeof body !== "object" ||
+          body === null ||
+          !("meals" in body) ||
+          !Array.isArray(body.meals)
+        ) {
+          throw new Error("The server returned an unexpected meal list.");
+        }
         if (active) {
-          setMeals(
-            data.map((meal) => ({
-              id: meal.id,
-              name: meal.name,
-              date: meal.meal_date,
-              time: meal.meal_time.slice(0, 5),
-            })),
-          );
+          setMeals((body.meals as ApiMeal[]).map(toMeal));
         }
       } catch (loadError) {
         if (active) {
@@ -115,37 +157,97 @@ export default function Home() {
     return () => {
       active = false;
     };
-  }, [weekStart]);
+  }, [passcode, weekStart]);
+
+  async function submitPasscode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setLoginError("");
+    const today = getTodayDate();
+    const initialWeek = getSunday(today);
+
+    try {
+      const response = await fetch(
+        `/api/meals?week_start=${encodeURIComponent(initialWeek)}`,
+        {
+          headers: { "x-app-passcode": passcodeInput },
+          cache: "no-store",
+        },
+      );
+      const body: unknown = await response.json();
+      if (!response.ok) {
+        setLoginError(
+          getErrorMessage(body, "Could not verify the passcode. Try again."),
+        );
+        return;
+      }
+
+      window.localStorage.setItem(PASSCODE_STORAGE_KEY, passcodeInput);
+      setPasscode(passcodeInput);
+      setPasscodeInput("");
+      setSelectedDate(today);
+      setWeekStart(initialWeek);
+    } catch (error) {
+      setLoginError(
+        error instanceof Error
+          ? error.message
+          : "Could not verify the passcode. Try again.",
+      );
+    }
+  }
+
+  async function sendMealRequest(
+    path: string,
+    method: "POST" | "PATCH" | "DELETE",
+    body?: Record<string, string>,
+  ) {
+    const response = await fetch(path, {
+      method,
+      headers: {
+        "content-type": "application/json",
+        "x-app-passcode": passcode,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const responseBody: unknown = await response.json();
+    if (!response.ok) {
+      if (response.status === 401) {
+        window.localStorage.removeItem(PASSCODE_STORAGE_KEY);
+        setPasscode("");
+      }
+      throw new Error(getErrorMessage(responseBody, "The request failed."));
+    }
+    return responseBody;
+  }
 
   async function addMeal() {
-    if (!mealName.trim()) return;
+    if (!mealName.trim() || !selectedDate || !mealTime) return;
 
     setIsSaving(true);
     setError("");
     try {
-      const supabase = getSupabaseBrowserClient();
-      const mealValues = {
-        name: mealName.trim(),
-        meal_date: selectedDate,
-        meal_time: mealTime,
-      };
-      const request = editingMeal
-        ? supabase
-            .from("meals")
-            .update(mealValues)
-            .eq("id", editingMeal.id)
-        : supabase.from("meals").insert(mealValues);
-      const { data, error: saveError } = await request
-        .select("id, name, meal_date, meal_time")
-        .single();
-
-      if (saveError) throw saveError;
-      const savedMeal: Meal = {
-        id: data.id,
-        name: data.name,
-        date: data.meal_date,
-        time: data.meal_time.slice(0, 5),
-      };
+      const body = await sendMealRequest(
+        editingMeal ? `/api/meals/${editingMeal.id}` : "/api/meals",
+        editingMeal ? "PATCH" : "POST",
+        {
+          name: mealName.trim(),
+          meal_date: selectedDate,
+          meal_time: mealTime,
+        },
+      );
+      if (
+        typeof body !== "object" ||
+        body === null ||
+        !("meal" in body) ||
+        typeof body.meal !== "object" ||
+        body.meal === null ||
+        !("id" in body.meal) ||
+        !("name" in body.meal) ||
+        !("meal_date" in body.meal) ||
+        !("meal_time" in body.meal)
+      ) {
+        throw new Error("The server returned an unexpected saved meal.");
+      }
+      const savedMeal = toMeal(body.meal as ApiMeal);
       setMeals((currentMeals) => {
         const updatedMeals = editingMeal
           ? currentMeals.map((meal) =>
@@ -176,12 +278,7 @@ export default function Home() {
     if (!window.confirm(`Delete "${meal.name}"?`)) return;
     setError("");
     try {
-      const supabase = getSupabaseBrowserClient();
-      const { error: deleteError } = await supabase
-        .from("meals")
-        .delete()
-        .eq("id", meal.id);
-      if (deleteError) throw deleteError;
+      await sendMealRequest(`/api/meals/${meal.id}`, "DELETE");
       setMeals((currentMeals) =>
         currentMeals.filter((currentMeal) => currentMeal.id !== meal.id),
       );
@@ -215,13 +312,10 @@ export default function Home() {
     setIsClearingWeek(true);
     setError("");
     try {
-      const supabase = getSupabaseBrowserClient();
-      const { error: clearError } = await supabase
-        .from("meals")
-        .delete()
-        .gte("meal_date", weekStart)
-        .lte("meal_date", weekEnd);
-      if (clearError) throw clearError;
+      await sendMealRequest(
+        `/api/meals?week_start=${encodeURIComponent(weekStart)}`,
+        "DELETE",
+      );
 
       setMeals([]);
       if (editingMeal) {
@@ -244,6 +338,54 @@ export default function Home() {
   const weekDates = weekStart
     ? Array.from({ length: 7 }, (_, index) => addDays(weekStart, index))
     : [];
+
+  if (!authInitialized) {
+    return (
+      <main className="mx-auto min-h-screen max-w-2xl bg-gray-50 p-4 text-gray-900 sm:p-6">
+        <p role="status">Loading your meal log…</p>
+      </main>
+    );
+  }
+
+  if (!passcode) {
+    return (
+      <main className="mx-auto min-h-screen max-w-2xl bg-gray-50 p-4 text-gray-900 sm:p-6">
+        <section className="mx-auto mt-16 max-w-md rounded-lg bg-white p-6 shadow-sm">
+          <h1 className="text-3xl font-bold">Meal Log</h1>
+          <p className="mt-2 text-gray-600">
+            Enter your passcode to open your meal log.
+          </p>
+          <form onSubmit={submitPasscode} className="mt-6">
+            <label htmlFor="app-passcode" className="block">
+              Passcode
+            </label>
+            <input
+              id="app-passcode"
+              type="password"
+              autoComplete="current-password"
+              required
+              value={passcodeInput}
+              onChange={(event) => setPasscodeInput(event.target.value)}
+              className="mt-2 w-full rounded border p-3 text-base"
+              placeholder="Enter your passcode"
+            />
+            {loginError && (
+              <p role="alert" className="mt-3 text-red-700">
+                {loginError}
+              </p>
+            )}
+            <button
+              type="submit"
+              className="mt-4 min-h-11 rounded bg-blue-600 px-5 text-white"
+            >
+              Open my log
+            </button>
+          </form>
+        </section>
+      </main>
+    );
+  }
+
   return (
       <main className="mx-auto min-h-screen max-w-2xl bg-gray-50 p-4 text-gray-900 sm:p-6">
       <h1 className="text-3xl font-bold">Meal Log</h1>
