@@ -42,6 +42,8 @@ drop policy if exists "Users can delete their own meals" on public.meals;
 Server API requests continue to work with the service-role key after these
 public policies are removed. Never expose that key in browser code.
 
+App link: https://fta-meal-log.vercel.app/
+
 ## Features
 
 - Browse days in a selected week; changing weeks never deletes data.
