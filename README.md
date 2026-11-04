@@ -1,7 +1,7 @@
 # F-T-A
 
 
-App link: https://fta-meal-log.vercel.app/
+
 
 Application to track food eaten today
 Product 1 Spec: Meal Log
