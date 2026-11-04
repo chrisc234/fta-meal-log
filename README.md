@@ -124,8 +124,8 @@ DELETE /api/meals?week_start=YYYY-MM-DD	Resets (deletes) one whole week, only wh
 Keeping it private: this is only for me, but anyone with the link could call the API. For the MVP, the page asks for a passcode once and stores it on my phone. The API checks it against an environment variable (APP_PASSCODE) and rejects requests without it. The Supabase keys (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) stay in environment variables on the server and are never put in front end code.
 
 # Demo
-
-App link: https://fta-meal-log.vercel.app/
+Open the meal Log demo:
+https://fta-meal-log.vercel.app/
 
 
 
